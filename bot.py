@@ -9,6 +9,7 @@ import os
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 TOKEN = os.environ.get("DISCORD_TOKEN")
+GUILD_ID = os.environ.get("GUILD_ID")  # <-- NEU: deine Server-ID hier als Railway Variable eintragen!
 TIMEZONE = pytz.timezone("Europe/Berlin")
 EMBED_COLOR = 0x8b0000
 DATA_FILE = "data.json"
@@ -211,7 +212,6 @@ async def update_nachricht(guild):
 
 # ─── NEUE ABSTIMMUNG POSTEN ───────────────────────────────────────────────────
 async def neue_abstimmung_posten(guild, manual_channel=None):
-    # Channel bestimmen
     if manual_channel:
         kanal = manual_channel
     elif data.get("channel_aufstellung"):
@@ -235,7 +235,6 @@ async def neue_abstimmung_posten(guild, manual_channel=None):
     embed = build_embed(datum, mitglieder, eingefroren=False)
     view  = AufstellungView()
 
-    # Nur die Rolle pingen (nicht jeden Member einzeln)
     rolle_id = data.get("rolle_id")
     ping_text = None
     if rolle_id:
@@ -256,7 +255,6 @@ async def abstimmung_einfrieren(guild):
     mitglieder = await get_rolle_mitglieder(guild)
     datum      = data.get("aktuelles_datum", get_heute_datum())
 
-    # Aufstellungs-Channel updaten (Buttons entfernen)
     if data.get("channel_aufstellung"):
         kanal  = guild.get_channel(int(data["channel_aufstellung"]))
         msg_id = data.get("aktuelle_nachricht_id")
@@ -268,7 +266,6 @@ async def abstimmung_einfrieren(guild):
             except Exception as e:
                 print(f"Fehler beim Einfrieren: {e}")
 
-    # Archiv-Channel: Kopie senden
     if data.get("channel_archiv"):
         archiv = guild.get_channel(int(data["channel_archiv"]))
         if archiv:
@@ -440,7 +437,25 @@ async def abmeldung_loeschen(interaction: discord.Interaction, mitglied: discord
 @bot.event
 async def on_ready():
     print(f"Bot online: {bot.user}")
-    await tree.sync()
+
+    # ── SYNC MIT LOGGING (NEU) ─────────────────────────────────────────────
+    # Guild-Sync = SOFORT sichtbar (nur auf deinem Server, super zum Testen)
+    # Global-Sync = kann bis zu 1h dauern, dafür auf allen Servern
+    try:
+        if GUILD_ID:
+            guild_obj = discord.Object(id=int(GUILD_ID))
+            tree.copy_global_to(guild=guild_obj)
+            synced = await tree.sync(guild=guild_obj)
+            print(f"✅ {len(synced)} Commands SOFORT auf Guild {GUILD_ID} gesynct: {[c.name for c in synced]}")
+        else:
+            print("⚠️ Keine GUILD_ID gesetzt — sync läuft global (kann bis zu 1h dauern).")
+
+        synced_global = await tree.sync()
+        print(f"✅ {len(synced_global)} Commands global gesynct: {[c.name for c in synced_global]}")
+    except Exception as e:
+        print(f"❌ FEHLER beim Sync: {e}")
+    # ─────────────────────────────────────────────────────────────────────
+
     bot.add_view(AufstellungView())
     check_zeit.start()
     print("Tasks gestartet. Bot ist bereit!")

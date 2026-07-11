@@ -275,7 +275,7 @@ async def check_zeit():
         await asyncio.sleep(61)
 
     # Jeden Tag 20:25 → einfrieren + archivieren
-    if h == 20 and m == 25 and not data.get("eingefroren", False):
+    if h == 20 and m == 30 and not data.get("eingefroren", False):
         for guild in bot.guilds:
             await abstimmung_einfrieren(guild)
         await asyncio.sleep(61)

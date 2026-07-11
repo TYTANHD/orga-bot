@@ -10,7 +10,7 @@ import os
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 TOKEN = os.environ.get("DISCORD_TOKEN")
 TIMEZONE = pytz.timezone("Europe/Berlin")
-EMBED_COLOR = 0x8b0000  # Dunkelrot
+EMBED_COLOR = 0x8b0000
 DATA_FILE = "data.json"
 
 # ─── DATA HANDLER ─────────────────────────────────────────────────────────────
@@ -25,9 +25,9 @@ def load_data():
         "abmeldungen": {},
         "eingefroren": False,
         "aktuelles_datum": None,
-        "channel_aufstellung": 1525504701582540954,
-        "channel_archiv": 1525504784872771614,
-        "channel_abmeldung": 1525504732137783306
+        "channel_aufstellung": None,
+        "channel_archiv": None,
+        "channel_abmeldung": None
     }
 
 def save_data(data):
@@ -35,15 +35,6 @@ def save_data(data):
         json.dump(data, f, indent=2)
 
 data = load_data()
-
-# Sicherstellen dass Channel-Keys immer vorhanden sind
-if "channel_aufstellung" not in data:
-    data["channel_aufstellung"] = 1525504701582540954
-if "channel_archiv" not in data:
-    data["channel_archiv"] = 1525504784872771614
-if "channel_abmeldung" not in data:
-    data["channel_abmeldung"] = 1525504732137783306
-save_data(data)
 
 # ─── BOT SETUP ────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -85,8 +76,8 @@ def build_embed(datum, mitglieder, eingefroren=False):
     offen_liste     = []
 
     for m in mitglieder:
-        uid = str(m.id)
-        mention = m.mention  # @Markierung
+        uid     = str(m.id)
+        mention = m.mention
         if uid in abmeldungen:
             abgemeldet_liste.append(mention)
         elif uid in abstimmung:
@@ -204,43 +195,55 @@ class AufstellungView(discord.ui.View):
 
 async def update_nachricht(guild):
     msg_id = data.get("aktuelle_nachricht_id")
-    if not msg_id:
+    if not msg_id or not data.get("channel_aufstellung"):
         return
     kanal = guild.get_channel(int(data["channel_aufstellung"]))
     if not kanal:
         return
     try:
-        msg = await kanal.fetch_message(int(msg_id))
+        msg        = await kanal.fetch_message(int(msg_id))
         mitglieder = await get_rolle_mitglieder(guild)
-        datum = data.get("aktuelles_datum", get_morgen_datum())
-        embed = build_embed(datum, mitglieder, data.get("eingefroren", False))
+        datum      = data.get("aktuelles_datum", get_morgen_datum())
+        embed      = build_embed(datum, mitglieder, data.get("eingefroren", False))
         await msg.edit(embed=embed)
     except Exception as e:
         print(f"Fehler beim Update der Nachricht: {e}")
 
 # ─── NEUE ABSTIMMUNG POSTEN ───────────────────────────────────────────────────
-async def neue_abstimmung_posten(guild):
-    kanal = guild.get_channel(int(data["channel_aufstellung"]))
+async def neue_abstimmung_posten(guild, manual_channel=None):
+    # Channel bestimmen
+    if manual_channel:
+        kanal = manual_channel
+    elif data.get("channel_aufstellung"):
+        kanal = guild.get_channel(int(data["channel_aufstellung"]))
+    else:
+        print("Kein Aufstellungs-Channel gesetzt! Bitte /set_aufstellung benutzen.")
+        return
+
     if not kanal:
         print("Aufstellungs-Channel nicht gefunden!")
         return
 
     datum = get_morgen_datum()
-    data["abstimmung"]       = {}
-    data["abmeldungen"]      = {}
-    data["eingefroren"]      = False
-    data["aktuelles_datum"]  = datum
+    data["abstimmung"]      = {}
+    data["abmeldungen"]     = {}
+    data["eingefroren"]     = False
+    data["aktuelles_datum"] = datum
 
     mitglieder = await get_rolle_mitglieder(guild)
-
-    # Alle Member mit der Rolle markieren in der Nachricht
-    mentions = " ".join([m.mention for m in mitglieder]) if mitglieder else ""
 
     embed = build_embed(datum, mitglieder, eingefroren=False)
     view  = AufstellungView()
 
-    # Mentions als Text VOR dem Embed senden damit alle gepingt werden
-    msg = await kanal.send(content=mentions if mentions else None, embed=embed, view=view)
+    # Nur die Rolle pingen (nicht jeden Member einzeln)
+    rolle_id = data.get("rolle_id")
+    ping_text = None
+    if rolle_id:
+        rolle = guild.get_role(int(rolle_id))
+        if rolle:
+            ping_text = rolle.mention
+
+    msg = await kanal.send(content=ping_text, embed=embed, view=view)
     data["aktuelle_nachricht_id"] = str(msg.id)
     save_data(data)
     print(f"Neue Abstimmung gepostet für {datum}")
@@ -254,23 +257,25 @@ async def abstimmung_einfrieren(guild):
     datum      = data.get("aktuelles_datum", get_heute_datum())
 
     # Aufstellungs-Channel updaten (Buttons entfernen)
-    kanal  = guild.get_channel(int(data["channel_aufstellung"]))
-    msg_id = data.get("aktuelle_nachricht_id")
-    if kanal and msg_id:
-        try:
-            msg   = await kanal.fetch_message(int(msg_id))
-            embed = build_embed(datum, mitglieder, eingefroren=True)
-            await msg.edit(embed=embed, view=None)
-        except Exception as e:
-            print(f"Fehler beim Einfrieren: {e}")
+    if data.get("channel_aufstellung"):
+        kanal  = guild.get_channel(int(data["channel_aufstellung"]))
+        msg_id = data.get("aktuelle_nachricht_id")
+        if kanal and msg_id:
+            try:
+                msg   = await kanal.fetch_message(int(msg_id))
+                embed = build_embed(datum, mitglieder, eingefroren=True)
+                await msg.edit(embed=embed, view=None)
+            except Exception as e:
+                print(f"Fehler beim Einfrieren: {e}")
 
     # Archiv-Channel: Kopie senden
-    archiv = guild.get_channel(int(data["channel_archiv"]))
-    if archiv:
-        embed_archiv       = build_embed(datum, mitglieder, eingefroren=True)
-        embed_archiv.title = f"ARCHIV – {embed_archiv.title}"
-        await archiv.send(embed=embed_archiv)
-        print(f"Abstimmung archiviert für {datum}")
+    if data.get("channel_archiv"):
+        archiv = guild.get_channel(int(data["channel_archiv"]))
+        if archiv:
+            embed_archiv       = build_embed(datum, mitglieder, eingefroren=True)
+            embed_archiv.title = f"ARCHIV – {embed_archiv.title}"
+            await archiv.send(embed=embed_archiv)
+            print(f"Abstimmung archiviert für {datum}")
 
 # ─── TASKS ────────────────────────────────────────────────────────────────────
 @tasks.loop(minutes=1)
@@ -278,13 +283,11 @@ async def check_zeit():
     now = datetime.now(TIMEZONE)
     h, m = now.hour, now.minute
 
-    # Jeden Tag 23:59 → neue Abstimmung für morgen
     if h == 23 and m == 59:
         for guild in bot.guilds:
             await neue_abstimmung_posten(guild)
         await asyncio.sleep(61)
 
-    # Jeden Tag 20:30 → einfrieren + archivieren
     if h == 20 and m == 30 and not data.get("eingefroren", False):
         for guild in bot.guilds:
             await abstimmung_einfrieren(guild)
@@ -293,64 +296,91 @@ async def check_zeit():
 # ─── SLASH COMMANDS ───────────────────────────────────────────────────────────
 
 @tree.command(name="setrolle", description="Setzt die Rolle die an der Aufstellung teilnimmt")
-@app_commands.describe(rolle="Die Rolle die abgestimmt werden soll")
+@app_commands.describe(rolle="Die Rolle die gepingt und abgestimmt werden soll")
 @app_commands.checks.has_permissions(administrator=True)
 async def setrolle(interaction: discord.Interaction, rolle: discord.Role):
     data["rolle_id"] = str(rolle.id)
     save_data(data)
     await interaction.response.send_message(
-        f"Rolle **{rolle.name}** wurde gesetzt.", ephemeral=True
+        f"✅ Rolle **{rolle.name}** wurde gesetzt.\n"
+        f"Diese Rolle wird bei jeder Abstimmung gepingt.",
+        ephemeral=True
     )
 
 @tree.command(name="set_aufstellung", description="Setzt den Channel für die Aufstellungs-Abstimmung")
-@app_commands.describe(channel="Der Channel für die Aufstellung")
+@app_commands.describe(channel="Der Channel wo die Abstimmung gepostet wird")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_aufstellung(interaction: discord.Interaction, channel: discord.TextChannel):
     data["channel_aufstellung"] = channel.id
     save_data(data)
     await interaction.response.send_message(
-        f"Aufstellungs-Channel gesetzt: {channel.mention}", ephemeral=True
+        f"✅ Aufstellungs-Channel gesetzt: {channel.mention}", ephemeral=True
     )
 
 @tree.command(name="set_archiv", description="Setzt den Channel für das Aufstellungs-Archiv")
-@app_commands.describe(channel="Der Archiv-Channel")
+@app_commands.describe(channel="Der Channel wo die archivierten Abstimmungen landen")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_archiv(interaction: discord.Interaction, channel: discord.TextChannel):
     data["channel_archiv"] = channel.id
     save_data(data)
     await interaction.response.send_message(
-        f"Archiv-Channel gesetzt: {channel.mention}", ephemeral=True
+        f"✅ Archiv-Channel gesetzt: {channel.mention}", ephemeral=True
     )
 
 @tree.command(name="set_abmeldung", description="Setzt den Channel für Abmeldungen")
-@app_commands.describe(channel="Der Abmeldungs-Channel")
+@app_commands.describe(channel="Der Channel wo Abmeldungen gepostet werden")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_abmeldung(interaction: discord.Interaction, channel: discord.TextChannel):
     data["channel_abmeldung"] = channel.id
     save_data(data)
     await interaction.response.send_message(
-        f"Abmeldungs-Channel gesetzt: {channel.mention}", ephemeral=True
+        f"✅ Abmeldungs-Channel gesetzt: {channel.mention}", ephemeral=True
     )
 
-@tree.command(name="channels", description="Zeigt alle aktuell gesetzten Channels")
+@tree.command(name="channels", description="Zeigt alle aktuell gesetzten Channels und die Rolle")
 @app_commands.checks.has_permissions(administrator=True)
-async def channels(interaction: discord.Interaction):
-    auf  = interaction.guild.get_channel(int(data["channel_aufstellung"]))
-    arch = interaction.guild.get_channel(int(data["channel_archiv"]))
-    abm  = interaction.guild.get_channel(int(data["channel_abmeldung"]))
+async def channels_info(interaction: discord.Interaction):
+    auf  = interaction.guild.get_channel(int(data["channel_aufstellung"])) if data.get("channel_aufstellung") else None
+    arch = interaction.guild.get_channel(int(data["channel_archiv"]))      if data.get("channel_archiv")      else None
+    abm  = interaction.guild.get_channel(int(data["channel_abmeldung"]))   if data.get("channel_abmeldung")   else None
+    rolle_id = data.get("rolle_id")
+    rolle = interaction.guild.get_role(int(rolle_id)) if rolle_id else None
+
     await interaction.response.send_message(
-        f"**Aktuelle Channel-Einstellungen:**\n"
-        f"Aufstellung: {auf.mention if auf else 'Nicht gesetzt'}\n"
-        f"Archiv: {arch.mention if arch else 'Nicht gesetzt'}\n"
-        f"Abmeldung: {abm.mention if abm else 'Nicht gesetzt'}",
+        f"**Aktuelle Einstellungen:**\n\n"
+        f"Rolle:        {rolle.mention if rolle else '❌ Nicht gesetzt – /setrolle benutzen'}\n"
+        f"Aufstellung:  {auf.mention  if auf  else '❌ Nicht gesetzt – /set_aufstellung benutzen'}\n"
+        f"Archiv:       {arch.mention if arch else '❌ Nicht gesetzt – /set_archiv benutzen'}\n"
+        f"Abmeldung:    {abm.mention  if abm  else '❌ Nicht gesetzt – /set_abmeldung benutzen'}",
         ephemeral=True
     )
+
+@tree.command(name="abstimmung", description="Postet manuell eine neue Aufstellungs-Abstimmung")
+@app_commands.checks.has_permissions(administrator=True)
+async def abstimmung_manuell(interaction: discord.Interaction):
+    if not data.get("channel_aufstellung"):
+        await interaction.response.send_message(
+            "❌ Kein Aufstellungs-Channel gesetzt!\nBitte zuerst **/set_aufstellung #channel** benutzen.",
+            ephemeral=True
+        )
+        return
+    await interaction.response.send_message("Erstelle neue Abstimmung...", ephemeral=True)
+    await neue_abstimmung_posten(interaction.guild)
+    await interaction.edit_original_response(content="✅ Neue Abstimmung wurde gepostet!")
+
+@tree.command(name="status", description="Zeigt den aktuellen Abstimmungsstand")
+@app_commands.checks.has_permissions(administrator=True)
+async def status(interaction: discord.Interaction):
+    mitglieder = await get_rolle_mitglieder(interaction.guild)
+    datum      = data.get("aktuelles_datum", get_morgen_datum())
+    embed      = build_embed(datum, mitglieder, data.get("eingefroren", False))
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="abmelden", description="Melde dich von der Aufstellung ab")
 @app_commands.describe(
     von="Von wann? (z.B. 14.07.2026)",
     bis="Bis wann? (z.B. 16.07.2026)",
-    grund="Grund (intern, nicht öffentlich)"
+    grund="Grund (intern, nicht öffentlich sichtbar)"
 )
 async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: str):
     rolle_id = data.get("rolle_id")
@@ -367,43 +397,27 @@ async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: 
     data["abstimmung"].pop(uid, None)
     save_data(data)
 
-    # Abstimmungs-Nachricht updaten
     if not data.get("eingefroren"):
         await update_nachricht(interaction.guild)
 
     await interaction.response.send_message(
-        f"Abmeldung eingetragen!\n"
+        f"✅ Abmeldung eingetragen!\n"
         f"Von: **{von}**\n"
         f"Bis: **{bis}**\n"
-        f"Du wirst als Abgemeldet angezeigt.",
+        f"Du wirst in der Aufstellung als Abgemeldet angezeigt.",
         ephemeral=True
     )
 
-    # Info in Abmeldungs-Channel
-    abm_kanal = interaction.guild.get_channel(int(data["channel_abmeldung"]))
-    if abm_kanal:
-        embed_abm = discord.Embed(title="Neue Abmeldung", color=EMBED_COLOR)
-        embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
-        embed_abm.add_field(name="Von",      value=von,                      inline=True)
-        embed_abm.add_field(name="Bis",      value=bis,                      inline=True)
-        embed_abm.set_footer(text="Narco City RP · Orga Management")
-        embed_abm.timestamp = datetime.now(TIMEZONE)
-        await abm_kanal.send(embed=embed_abm)
-
-@tree.command(name="abstimmung", description="Postet manuell eine neue Aufstellungs-Abstimmung")
-@app_commands.checks.has_permissions(administrator=True)
-async def abstimmung_manuell(interaction: discord.Interaction):
-    await interaction.response.send_message("Erstelle neue Abstimmung...", ephemeral=True)
-    await neue_abstimmung_posten(interaction.guild)
-    await interaction.edit_original_response(content="Neue Abstimmung wurde gepostet!")
-
-@tree.command(name="status", description="Zeigt den aktuellen Abstimmungsstand")
-@app_commands.checks.has_permissions(administrator=True)
-async def status(interaction: discord.Interaction):
-    mitglieder = await get_rolle_mitglieder(interaction.guild)
-    datum      = data.get("aktuelles_datum", get_morgen_datum())
-    embed      = build_embed(datum, mitglieder, data.get("eingefroren", False))
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    if data.get("channel_abmeldung"):
+        abm_kanal = interaction.guild.get_channel(int(data["channel_abmeldung"]))
+        if abm_kanal:
+            embed_abm = discord.Embed(title="Neue Abmeldung", color=EMBED_COLOR)
+            embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
+            embed_abm.add_field(name="Von",      value=von,                      inline=True)
+            embed_abm.add_field(name="Bis",      value=bis,                      inline=True)
+            embed_abm.set_footer(text="Narco City RP · Orga Management")
+            embed_abm.timestamp = datetime.now(TIMEZONE)
+            await abm_kanal.send(embed=embed_abm)
 
 @tree.command(name="abmeldung_loeschen", description="Entfernt die Abmeldung eines Mitglieds")
 @app_commands.describe(mitglied="Das Mitglied dessen Abmeldung entfernt werden soll")
@@ -415,11 +429,11 @@ async def abmeldung_loeschen(interaction: discord.Interaction, mitglied: discord
         save_data(data)
         await update_nachricht(interaction.guild)
         await interaction.response.send_message(
-            f"Abmeldung von **{mitglied.display_name}** entfernt.", ephemeral=True
+            f"✅ Abmeldung von **{mitglied.display_name}** entfernt.", ephemeral=True
         )
     else:
         await interaction.response.send_message(
-            f"**{mitglied.display_name}** hat keine aktive Abmeldung.", ephemeral=True
+            f"❌ **{mitglied.display_name}** hat keine aktive Abmeldung.", ephemeral=True
         )
 
 # ─── BOT EVENTS ───────────────────────────────────────────────────────────────

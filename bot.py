@@ -8,8 +8,8 @@ import json
 import os
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-TOKEN = os.environ.get("DISCORD_TOKEN")
-GUILD_ID = os.environ.get("GUILD_ID")  # <-- NEU: deine Server-ID hier als Railway Variable eintragen!
+TOKEN    = os.environ.get("DISCORD_TOKEN")
+GUILD_ID = os.environ.get("GUILD_ID")
 TIMEZONE = pytz.timezone("Europe/Berlin")
 EMBED_COLOR = 0x8b0000
 DATA_FILE = "data.json"
@@ -70,11 +70,11 @@ def build_embed(datum, mitglieder, eingefroren=False):
     abstimmung  = data.get("abstimmung", {})
     abmeldungen = data.get("abmeldungen", {})
 
-    ja_liste        = []
-    spaeter_liste   = []
-    nein_liste      = []
-    abgemeldet_liste= []
-    offen_liste     = []
+    ja_liste         = []
+    spaeter_liste    = []
+    nein_liste       = []
+    abgemeldet_liste = []
+    offen_liste      = []
 
     for m in mitglieder:
         uid     = str(m.id)
@@ -210,8 +210,30 @@ async def update_nachricht(guild):
     except Exception as e:
         print(f"Fehler beim Update der Nachricht: {e}")
 
+# ─── ALTE NACHRICHT LÖSCHEN ───────────────────────────────────────────────────
+async def alte_nachricht_loeschen(guild):
+    """Löscht die alte Aufstellungs-Nachricht aus dem Channel."""
+    msg_id = data.get("aktuelle_nachricht_id")
+    if not msg_id or not data.get("channel_aufstellung"):
+        return
+    kanal = guild.get_channel(int(data["channel_aufstellung"]))
+    if not kanal:
+        return
+    try:
+        msg = await kanal.fetch_message(int(msg_id))
+        await msg.delete()
+        print("Alte Aufstellungs-Nachricht gelöscht.")
+    except discord.NotFound:
+        print("Alte Nachricht nicht gefunden (evtl. schon manuell gelöscht).")
+    except Exception as e:
+        print(f"Fehler beim Löschen der alten Nachricht: {e}")
+
 # ─── NEUE ABSTIMMUNG POSTEN ───────────────────────────────────────────────────
 async def neue_abstimmung_posten(guild, manual_channel=None):
+    # 1. Alte Nachricht löschen
+    await alte_nachricht_loeschen(guild)
+
+    # 2. Channel bestimmen
     if manual_channel:
         kanal = manual_channel
     elif data.get("channel_aufstellung"):
@@ -224,18 +246,19 @@ async def neue_abstimmung_posten(guild, manual_channel=None):
         print("Aufstellungs-Channel nicht gefunden!")
         return
 
+    # 3. Daten zurücksetzen
     datum = get_morgen_datum()
     data["abstimmung"]      = {}
     data["abmeldungen"]     = {}
     data["eingefroren"]     = False
     data["aktuelles_datum"] = datum
 
+    # 4. Neue Nachricht posten
     mitglieder = await get_rolle_mitglieder(guild)
+    embed      = build_embed(datum, mitglieder, eingefroren=False)
+    view       = AufstellungView()
 
-    embed = build_embed(datum, mitglieder, eingefroren=False)
-    view  = AufstellungView()
-
-    rolle_id = data.get("rolle_id")
+    rolle_id  = data.get("rolle_id")
     ping_text = None
     if rolle_id:
         rolle = guild.get_role(int(rolle_id))
@@ -255,6 +278,7 @@ async def abstimmung_einfrieren(guild):
     mitglieder = await get_rolle_mitglieder(guild)
     datum      = data.get("aktuelles_datum", get_heute_datum())
 
+    # Aufstellungs-Nachricht einfrieren (Buttons entfernen)
     if data.get("channel_aufstellung"):
         kanal  = guild.get_channel(int(data["channel_aufstellung"]))
         msg_id = data.get("aktuelle_nachricht_id")
@@ -266,6 +290,7 @@ async def abstimmung_einfrieren(guild):
             except Exception as e:
                 print(f"Fehler beim Einfrieren: {e}")
 
+    # Archiv: Kopie senden (bleibt erhalten!)
     if data.get("channel_archiv"):
         archiv = guild.get_channel(int(data["channel_archiv"]))
         if archiv:
@@ -280,11 +305,13 @@ async def check_zeit():
     now = datetime.now(TIMEZONE)
     h, m = now.hour, now.minute
 
+    # 23:59 → alte löschen + neue posten
     if h == 23 and m == 59:
         for guild in bot.guilds:
             await neue_abstimmung_posten(guild)
         await asyncio.sleep(61)
 
+    # 20:30 → einfrieren + archivieren
     if h == 20 and m == 30 and not data.get("eingefroren", False):
         for guild in bot.guilds:
             await abstimmung_einfrieren(guild)
@@ -299,8 +326,7 @@ async def setrolle(interaction: discord.Interaction, rolle: discord.Role):
     data["rolle_id"] = str(rolle.id)
     save_data(data)
     await interaction.response.send_message(
-        f"✅ Rolle **{rolle.name}** wurde gesetzt.\n"
-        f"Diese Rolle wird bei jeder Abstimmung gepingt.",
+        f"✅ Rolle **{rolle.name}** wurde gesetzt. Sie wird bei jeder Abstimmung gepingt.",
         ephemeral=True
     )
 
@@ -337,31 +363,31 @@ async def set_abmeldung(interaction: discord.Interaction, channel: discord.TextC
 @tree.command(name="channels", description="Zeigt alle aktuell gesetzten Channels und die Rolle")
 @app_commands.checks.has_permissions(administrator=True)
 async def channels_info(interaction: discord.Interaction):
-    auf  = interaction.guild.get_channel(int(data["channel_aufstellung"])) if data.get("channel_aufstellung") else None
-    arch = interaction.guild.get_channel(int(data["channel_archiv"]))      if data.get("channel_archiv")      else None
-    abm  = interaction.guild.get_channel(int(data["channel_abmeldung"]))   if data.get("channel_abmeldung")   else None
+    auf      = interaction.guild.get_channel(int(data["channel_aufstellung"])) if data.get("channel_aufstellung") else None
+    arch     = interaction.guild.get_channel(int(data["channel_archiv"]))      if data.get("channel_archiv")      else None
+    abm      = interaction.guild.get_channel(int(data["channel_abmeldung"]))   if data.get("channel_abmeldung")   else None
     rolle_id = data.get("rolle_id")
-    rolle = interaction.guild.get_role(int(rolle_id)) if rolle_id else None
+    rolle    = interaction.guild.get_role(int(rolle_id)) if rolle_id else None
 
     await interaction.response.send_message(
         f"**Aktuelle Einstellungen:**\n\n"
-        f"Rolle:        {rolle.mention if rolle else '❌ Nicht gesetzt – /setrolle benutzen'}\n"
-        f"Aufstellung:  {auf.mention  if auf  else '❌ Nicht gesetzt – /set_aufstellung benutzen'}\n"
-        f"Archiv:       {arch.mention if arch else '❌ Nicht gesetzt – /set_archiv benutzen'}\n"
-        f"Abmeldung:    {abm.mention  if abm  else '❌ Nicht gesetzt – /set_abmeldung benutzen'}",
+        f"Rolle:       {rolle.mention if rolle else '❌ Nicht gesetzt – /setrolle'}\n"
+        f"Aufstellung: {auf.mention   if auf   else '❌ Nicht gesetzt – /set_aufstellung'}\n"
+        f"Archiv:      {arch.mention  if arch  else '❌ Nicht gesetzt – /set_archiv'}\n"
+        f"Abmeldung:   {abm.mention   if abm   else '❌ Nicht gesetzt – /set_abmeldung'}",
         ephemeral=True
     )
 
-@tree.command(name="abstimmung", description="Postet manuell eine neue Aufstellungs-Abstimmung")
+@tree.command(name="abstimmung", description="Löscht die alte Abstimmung und postet eine neue")
 @app_commands.checks.has_permissions(administrator=True)
 async def abstimmung_manuell(interaction: discord.Interaction):
     if not data.get("channel_aufstellung"):
         await interaction.response.send_message(
-            "❌ Kein Aufstellungs-Channel gesetzt!\nBitte zuerst **/set_aufstellung #channel** benutzen.",
+            "❌ Kein Aufstellungs-Channel gesetzt!\nBitte zuerst /set_aufstellung #channel benutzen.",
             ephemeral=True
         )
         return
-    await interaction.response.send_message("Erstelle neue Abstimmung...", ephemeral=True)
+    await interaction.response.send_message("⏳ Alte Abstimmung wird gelöscht und neue wird erstellt...", ephemeral=True)
     await neue_abstimmung_posten(interaction.guild)
     await interaction.edit_original_response(content="✅ Neue Abstimmung wurde gepostet!")
 
@@ -377,7 +403,7 @@ async def status(interaction: discord.Interaction):
 @app_commands.describe(
     von="Von wann? (z.B. 14.07.2026)",
     bis="Bis wann? (z.B. 16.07.2026)",
-    grund="Grund (intern, nicht öffentlich sichtbar)"
+    grund="Grund für die Abmeldung"
 )
 async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: str):
     rolle_id = data.get("rolle_id")
@@ -390,10 +416,12 @@ async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: 
             return
 
     uid = str(interaction.user.id)
+    # Grund wird gespeichert aber hat keinen Einfluss auf die Aufstellung
     data["abmeldungen"][uid] = {"von": von, "bis": bis, "grund": grund}
     data["abstimmung"].pop(uid, None)
     save_data(data)
 
+    # Abstimmungs-Nachricht updaten (nur als Abgemeldet markiert, kein Grund sichtbar)
     if not data.get("eingefroren"):
         await update_nachricht(interaction.guild)
 
@@ -405,14 +433,24 @@ async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: 
         ephemeral=True
     )
 
+    # Abmeldungs-Channel: Grund wird hier angezeigt
     if data.get("channel_abmeldung"):
         abm_kanal = interaction.guild.get_channel(int(data["channel_abmeldung"]))
         if abm_kanal:
-            embed_abm = discord.Embed(title="Neue Abmeldung", color=EMBED_COLOR)
+            embed_abm = discord.Embed(
+                title="Neue Abmeldung",
+                color=EMBED_COLOR
+            )
             embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
             embed_abm.add_field(name="Von",      value=von,                      inline=True)
             embed_abm.add_field(name="Bis",      value=bis,                      inline=True)
-            embed_abm.set_footer(text="Narco City RP · Orga Management")
+            # Grund wird angezeigt aber hat keinen Einfluss auf die Aufstellung
+            embed_abm.add_field(
+                name="Grund",
+                value=f"*{grund}*",
+                inline=False
+            )
+            embed_abm.set_footer(text="Narco City RP · Orga Management · Grund hat keinen Einfluss auf die Aufstellung")
             embed_abm.timestamp = datetime.now(TIMEZONE)
             await abm_kanal.send(embed=embed_abm)
 
@@ -438,9 +476,6 @@ async def abmeldung_loeschen(interaction: discord.Interaction, mitglied: discord
 async def on_ready():
     print(f"Bot online: {bot.user}")
 
-    # ── SYNC MIT LOGGING (NEU) ─────────────────────────────────────────────
-    # Guild-Sync = SOFORT sichtbar (nur auf deinem Server, super zum Testen)
-    # Global-Sync = kann bis zu 1h dauern, dafür auf allen Servern
     try:
         if GUILD_ID:
             guild_obj = discord.Object(id=int(GUILD_ID))
@@ -451,10 +486,9 @@ async def on_ready():
             print("⚠️ Keine GUILD_ID gesetzt — sync läuft global (kann bis zu 1h dauern).")
 
         synced_global = await tree.sync()
-        print(f"✅ {len(synced_global)} Commands global gesynct: {[c.name for c in synced_global]}")
+        print(f"✅ {len(synced_global)} Commands global gesynct.")
     except Exception as e:
         print(f"❌ FEHLER beim Sync: {e}")
-    # ─────────────────────────────────────────────────────────────────────
 
     bot.add_view(AufstellungView())
     check_zeit.start()
